@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testrun name="" >
+<testsuite  name="Default Test Suite" project="wormTest">
+<testsuite name="flexUnitTests:MigrationTests" type="testcaseclass"/>
+<testsuite name="flexUnitTests:WormTests" type="testcaseclass"/>
+</testsuite>
+</testrun>
