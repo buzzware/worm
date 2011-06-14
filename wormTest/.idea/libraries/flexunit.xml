@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="flexunit" type="flex">
+    <CLASSES>
+      <root url="jar://$REPOS$/flexunit/swcs/flexunit-4.1.0-8-flex_4.1.0.16076.swc!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>
