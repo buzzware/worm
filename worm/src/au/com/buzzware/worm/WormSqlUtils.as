@@ -1,7 +1,9 @@
 package au.com.buzzware.worm {
 	import flash.utils.getQualifiedClassName;
-	
-	public class WormSqlUtils {
+
+import org.flexunit.internals.builders.NullBuilder;
+
+public class WormSqlUtils {
 
 		public static function fieldsToString(aFields: Array): String {
 			var names: String
@@ -17,7 +19,14 @@ package au.com.buzzware.worm {
 		public static function valueToSql(aValue: *): String {
 			var cls: String = getQualifiedClassName(aValue)
 			switch (cls) {
-				case 'String': return "'"+aValue+"'";
+				case 'String': return "'"+aValue+"'"; break;
+				case 'int':
+				case 'Number':
+					return aValue.toString(); break;
+				case 'Boolean':
+					return aValue ? '1' : '0'; break;
+				case 'null':
+					return 'NULL'; break;
 				default:
 					throw new Error("unsupported type "+cls);
 			}
