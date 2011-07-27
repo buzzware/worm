@@ -154,7 +154,7 @@ public class Worm {
 		return strings.join(' ')
 	}
 
-	protected function execute():Worm {
+	public function execute():Worm {
 		var result:SQLResult
 		var sql:String = prepareSql()
 
@@ -385,7 +385,19 @@ public class Worm {
 	}
 
 	public function toSimpleArray(aProperty: String = null):Array {
+		if (!aProperty) {
+			var fields: Array = getDataFields(data[0])
+			aProperty = fields[0]
+		}
+		return ObjectAndArrayUtils.ObjectArrayExtractPropertyValues(data, aProperty)
+	}
 
+	public function getDataFields(aDataItem:*):Array {
+    var fieldNames: Array = ReflectionUtils.getFieldNames(aDataItem).sort()
+		ObjectAndArrayUtils.arrayRemove(fieldNames,objectClassField);
+		if (idIsAutoIncrement)
+			ObjectAndArrayUtils.arrayRemove(fieldNames,idField);
+		return fieldNames
 	}
 
 	//
