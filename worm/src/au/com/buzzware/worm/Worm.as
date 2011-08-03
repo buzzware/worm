@@ -8,10 +8,14 @@ import flash.data.SQLResult;
 import flash.data.SQLSchemaResult;
 import flash.data.SQLStatement;
 import flash.data.SQLTableSchema;
+import flash.errors.SQLError;
 import flash.events.SQLErrorEvent;
 import flash.events.SQLEvent;
 import flash.filesystem.File;
+import flash.utils.getDefinitionByName;
 import flash.utils.getQualifiedClassName;
+
+import org.flexunit.assumeThat;
 
 public class Worm {
 
@@ -38,9 +42,12 @@ public class Worm {
 	protected var _where:String
 	protected var _join:String
 	protected var _update:String
-	protected var _values:String
+	protected var _values:Object
+	protected var _valuesSql:String
 
 	public var data:Array;
+	[Bindable]
+	public var tables:Array = [];
 
 	public function Worm() {
 		clear()
@@ -64,6 +71,7 @@ public class Worm {
 		_join = null
 		_update = null
 		_values = null
+		_valuesSql = null
 		clearData()
 		return this
 	}
@@ -88,7 +96,31 @@ public class Worm {
 		var dbFile:File = File.applicationStorageDirectory.resolvePath(aFilename);
 		_connection = new SQLConnection();
 		_connection.open(dbFile);
+		refreshInternalSchema()
 		return _connection
+	}
+
+	public function refreshTables():Array {
+		var result:Array = []
+		try {
+			connection.loadSchema(SQLTableSchema, null, "main", false) //SQLTableSchema,null,null,false)
+			var r:SQLSchemaResult = connection.getSchemaResult()
+			for each (var table:SQLTableSchema in r.tables) {
+				result.push(table.name)
+			}
+		} catch (e: SQLError) {
+			if (e.errorID==3115) {
+				trace('no tables')// no tables
+			} else {
+				throw e
+			}
+		}
+		tables = result;
+		return result;
+	}
+
+	protected function refreshInternalSchema():void {
+		refreshTables()
 	}
 
 	public function get objectClassField(): String {
@@ -104,6 +136,7 @@ public class Worm {
 	}
 
 	protected function executeSqlInternal(aSql:String, aResultHandler:Function = null, aErrorHandler:Function = null):SQLResult {
+		trace('executeSqlInternal: '+aSql)
 		if (dontExecuteSql) {
 			sqlCapture.push(aSql)
 			return new SQLResult()
@@ -134,22 +167,38 @@ public class Worm {
 	public function prepareSql():String {
 		var strings:Array = new Array()
 		strings.push(_command)
-		if (_command == 'SELECT') {
-			strings.push(_select)
-		}
-		if (_command == 'INSERT') {
-			strings.push('INTO')
-			strings.push(_table)
-			strings.push(_values)
-		}
-		if (_command == 'SELECT') {
-			strings.push('FROM')
-			strings.push(_table)
-		}
-		if (_command == 'UPDATE') {
-			strings.push(_update)
-			strings.push('SET')
-			strings.push(_values)
+		switch(_command) {
+			case 'SELECT':
+				strings.push(_select || '*')
+				strings.push('FROM')
+				strings.push(_table)
+				if (_where) {
+					strings.push('WHERE')
+					strings.push(_where)
+				}
+			break;
+			case 'INSERT':
+				strings.push('INTO')
+				strings.push(_table)
+				strings.push(internalValuesSql())
+			break;
+			case 'UPDATE':
+				strings.push(_update)
+				strings.push('SET')
+				strings.push(internalValuesSql())
+				if (_where) {
+					strings.push('WHERE');
+					strings.push(_where);
+				}
+			break;
+			case 'DELETE':
+				strings.push('FROM')
+				strings.push(_table)
+				if (_where) {
+					strings.push('WHERE');
+					strings.push(_where);
+				}
+			break;
 		}
 		return strings.join(' ')
 	}
@@ -181,10 +230,25 @@ public class Worm {
 	// Helper Methods
 	//
 
-	private function tableFromObject(aValues:*):String {
-		var klass:String = ReflectionUtils.getClassName(aValues)
-		var result: String = StringUtils.snake_case(klass)
-		return result
+	public function modelNameFromObject(aObject: Object):String {
+		return ReflectionUtils.getClassName(aObject)
+	}
+
+	public function tableFromModelName(aModelName: String): String {
+		var result: String = StringUtils.snake_case(aModelName)
+		return (result && tables && tables.indexOf(result)>=0) ? result : null
+	}
+
+	public function tableFromObject(aValues:*):String {
+		var mn:String = modelNameFromObject(aValues)
+		return tableFromModelName(mn)
+	}
+
+	public function idFromObject(aObject: *): int {
+		if (aObject[idField] is int)
+			return aObject[idField] as int;
+		else
+			return -1;
 	}
 
 	public function fillFromSqlResult(aSQLResult:SQLResult):void {
@@ -209,8 +273,35 @@ public class Worm {
 	//
 
 	public function valuesSql(aValuesSql:String):Worm {
-		_values = aValuesSql
+		_valuesSql = aValuesSql
 		return this;
+	}
+
+	public function internalValuesSql(): String {
+		if (_valuesSql)
+			return _valuesSql
+		else if (_values) {
+			var fieldNames:Array = ObjectAndArrayUtils.getDynamicPropertyNames(_values).sort()
+			ObjectAndArrayUtils.arrayRemove(fieldNames,objectClassField);
+			if (idIsAutoIncrement)
+				ObjectAndArrayUtils.arrayRemove(fieldNames,idField);
+
+			var sql:String = ''
+			var arrValues:Array = new Array()
+			if (_command=='INSERT') {
+				for each (var f:String in fieldNames) {
+					arrValues.push(WormSqlUtils.valueToSql(_values[f]))
+				}
+				sql = '(' + WormSqlUtils.fieldsToString(fieldNames) + ') VALUES (' + arrValues.join(',') + ')'
+			}	else if (_command=='UPDATE') {
+				for each (var f:String in fieldNames) {
+					arrValues.push(f+'='+WormSqlUtils.valueToSql(_values[f]))
+				}
+				sql = arrValues.join(', ')
+			}
+			return sql
+		} else
+			return null;
 	}
 
 /*
@@ -224,17 +315,10 @@ public class Worm {
 */
 
 	public function values(aValueObject:*):Worm {
-		var fields:Object = ReflectionUtils.getFieldsWithClassNames(aValueObject)
-		var fieldNames:Array = ObjectAndArrayUtils.getDynamicPropertyNames(fields).sort()
-		ObjectAndArrayUtils.arrayRemove(fieldNames,objectClassField);
-		if (idIsAutoIncrement)
-			ObjectAndArrayUtils.arrayRemove(fieldNames,idField);
-		var arrValues:Array = new Array()
-		for each (var f:String in fieldNames) {
-			arrValues.push(WormSqlUtils.valueToSql(aValueObject[f]))
-		}
-		var sql:String = '(' + WormSqlUtils.fieldsToString(fieldNames) + ') VALUES (' + arrValues.join(',') + ')'
-		return valuesSql(sql);
+		if (!_values)
+			_values = new Object();
+		ReflectionUtils.copyAllFields(_values, aValueObject)
+		return this
 	}
 
 	public function into(aTable:String):Worm {
@@ -263,6 +347,11 @@ public class Worm {
 		}
 		else
 			throw new Error('unsupported type ' + getQualifiedClassName(aTables));
+		return this
+	}
+
+	public function whereSql(aCondition:String):Worm {
+		_where = aCondition
 		return this
 	}
 
@@ -311,12 +400,88 @@ public class Worm {
 		return this
 	}
 
-	public function update(aTable:String = null):Worm {
-		if (aTable.indexOf('"') == -1)
-			aTable = '"' + aTable + '"';
-		return updateSql(aTable)
+	protected function assume(aTest: *,aMessage: String = null): * {
+		if (aTest)
+			return aTest;
+		throw new Error("Broken Assumption: "+(aMessage || ''))
 	}
 
+	// UPDATE location SET name="Work 2" WHERE id=2
+	public function update(aSomething: * = null):Worm {
+		var result: Worm
+		var table: String
+		if (aSomething is String) {
+			table = aSomething as String
+			if (table.indexOf('"') == -1)
+				table = '"' + table + '"';
+			result = updateSql(table)
+		} else if (aSomething is Object) {
+			var id: int = idFromObject(aSomething)
+			assume(id>0,"object has id");
+			table = tableFromObject(aSomething)
+			assume(table,"known table")
+			result = updateSql(table).values(aSomething).whereSql(idField+"="+id.toString()).execute()
+		}
+		return result
+	}
+
+	public function deleteSql():Worm {
+		_command = 'DELETE'
+		return this
+	}
+
+	public function destroy(aObject: Object): Worm {
+		var i: int
+		if (aObject is int) {
+			i = int(aObject)
+		} else {
+			i = int(aObject && aObject[idField])
+		}
+		if (!i || !_table)
+			return this;
+		return deleteSql().from(_table).whereSql(idField+"="+i.toString()).execute()
+	}
+
+	// reloads an objects properties from the database and returns a new instance of the same type
+	public function reload(aObject: Object): Object {
+		var id: int = idFromObject(aObject)
+		assume(id>0,"object has id");
+		var result: Object
+		if (isSimpleObject(aObject)) {
+			var table: String = tableFromObject(aObject)
+			assume(table,"known table")
+			result = selectSql().itemByModelId(table, id)
+		} else {
+			var model: Class = modelFromObject(aObject)
+			assume(model,"known model class")
+			result = selectSql().itemByModelId(model, id)
+		}
+		return result
+	}
+
+	public function modelFromObject(aObject:Object):Class {
+		var cls: Class
+		if (isSimpleObject(aObject)) {
+			var cn: String = aObject[objectClassField]
+			cls = modelByName(cn)
+		} else {
+			cls = ReflectionUtils.getClass(aObject)
+		}
+		return cls
+	}
+
+	public function modelByName(cn:String): Class {
+		return getDefinitionByName(cn) as Class
+	}
+
+	public function isSimpleObject(aObject:Object): Boolean {
+		if (!aObject)
+			return null;
+		var cn: String = ReflectionUtils.getClassName(aObject)
+		if (!cn)
+			return null;
+		return (cn=='Object') || (cn=='BindableObject')
+	}
 
 	//
 	// Database-wide methods
@@ -335,17 +500,6 @@ public class Worm {
 	 }
 	 */
 
-	public function get tables():Array {
-		var result:Array = []
-		connection.loadSchema(SQLTableSchema, null, "main", false) //SQLTableSchema,null,null,false)
-		var r:SQLSchemaResult = connection.getSchemaResult()
-		for each (var table:SQLTableSchema in r.tables) {
-			result.push(table.name)
-		}
-		return result;
-	}
-
-
 	//
 	// Object methods
 	//
@@ -359,6 +513,12 @@ public class Worm {
 		methodRequiresSqlExecute()
 		return data ? data[data.length - 1] : null
 	}
+
+	public function itemByModelId(aTableOrModel: *, aId:int):Object {
+		from(aTableOrModel)
+		return whereSql(idField+"="+aId.toString()).first
+	}
+
 
 	public function asClass(aType: Class): Worm {
 		_dataClass = aType
@@ -385,6 +545,7 @@ public class Worm {
 	}
 
 	public function toSimpleArray(aProperty: String = null):Array {
+		methodRequiresSqlExecute()
 		if (!aProperty) {
 			var fields: Array = getDataFields(data[0])
 			aProperty = fields[0]
@@ -429,7 +590,9 @@ public class Worm {
 		}
 		sql += cols.join(', ')
 		sql += ')'
-		return executeSql(sql)
+		var result: Worm = executeSql(sql)
+		refreshInternalSchema()
+		return result
 	}
 
 	public function addMigration(aMigration:Class):void {
@@ -446,6 +609,7 @@ public class Worm {
 				this.sqlCapture.push(i)
 			}
 		}
+		refreshInternalSchema()
 	}
 
 
